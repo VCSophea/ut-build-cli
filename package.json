@@ -1,0 +1,22 @@
+{
+  "name": "ut-build-cli",
+  "version": "1.0.0",
+  "description": "Universal build, codegen, release, and docker orchestration CLI for Spring Boot APIs",
+  "main": "bin/ut-build.js",
+  "bin": {
+    "ut-build": "./bin/ut-build.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/VCSophea/ut-build-cli.git"
+  },
+  "keywords": [
+    "cli",
+    "spring-boot",
+    "docker",
+    "watchtower",
+    "udaya"
+  ],
+  "author": "VCSophea",
+  "license": "ISC"
+}
