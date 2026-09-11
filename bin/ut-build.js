@@ -70,7 +70,7 @@ const mvn = resolveMaven(projectRoot);
 if (cmd === "clean") {
   console.log("🧹 Cleaning project...");
   run(mvn, ["clean", "-q"], projectRoot);
-  ["release", "target", "uploads", "deploy", "docker-compose.yml"].forEach((dir) => {
+  ["release", "target", "uploads", "deploy", "docker-compose.yml", "templates"].forEach((dir) => {
     const p = path.join(projectRoot, dir);
     if (existsSync(p)) rmSync(p, { recursive: true, force: true });
   });
@@ -120,48 +120,8 @@ if (cmd === "start") {
   process.exit(0);
 }
 
-// * Command: compose
-if (cmd === "compose") {
-  const spec = ENV_SPECS[config.appEnv] || ENV_SPECS.local;
-  const composeContent = generateComposeYml(config, config.appEnv, spec, "build");
-  const composeFile = path.join(projectRoot, "docker-compose.yml");
-  writeFileSync(composeFile, composeContent);
-
-  const uploadVolume = config.uploadDir;
-  if (uploadVolume) {
-    try {
-      execSync(`docker volume inspect ${uploadVolume} >/dev/null 2>&1 || docker volume create ${uploadVolume}`, { stdio: "ignore" });
-    } catch (_) {}
-  }
-
-  const action = (process.argv[3] || "up").toLowerCase();
-  const cmdBase = ["compose", "--project-directory", projectRoot, "-f", composeFile];
-  let dockerCmd = [];
-  if (action === "down") dockerCmd = [...cmdBase, "down"];
-  else if (action === "restart") dockerCmd = [...cmdBase, "restart"];
-  else dockerCmd = [...cmdBase, "up", "-d"];
-
-  console.log(`🐳 Running: docker ${dockerCmd.join(" ")}`);
-  spawnSync("docker", dockerCmd, { stdio: "inherit", cwd: projectRoot });
-  process.exit(0);
-}
-
-// * Command: deploy
-if (cmd === "deploy") {
-  const zipName = `${config.name}##V${config.version}.zip`;
-  const zipPath = path.join(projectRoot, "release", zipName);
-  if (!existsSync(zipPath)) {
-    die(`Release package not found at: ${zipPath}\n💡 Run 'ut-build release' or 'ut-build build' first.`);
-  }
-  console.log(`🚀 Ready to deploy: ${zipName}`);
-  console.log(`📋 Instructions:`);
-  console.log(`   1. Transfer release/${zipName} to your server.`);
-  console.log(`   2. Extract and run 'docker compose up -d'.`);
-  process.exit(0);
-}
-
-// * Commands: build / rebuild / release
-if (cmd === "build" || cmd === "rebuild" || cmd === "release") {
+// * Reusable build function
+function executeBuild(isRelease = false) {
   console.log(`\n🚀 Compiling ${config.name} V${config.version} [${config.appEnv}]...`);
   run(mvn, ["clean", "install", "-Dmaven.test.skip=true", "-q"], projectRoot);
 
@@ -181,18 +141,30 @@ if (cmd === "build" || cmd === "rebuild" || cmd === "release") {
   if (existsSync(envFile)) copyFileSync(envFile, path.join(deployDir, ".env"));
 
   const spec = ENV_SPECS[config.appEnv] || ENV_SPECS.local;
-  const composeContent = (cmd === "build" || cmd === "rebuild")
+  const composeContent = (!isRelease)
     ? generateComposeYml(config, config.appEnv, spec, "build")
     : generateComposeYml(config, config.appEnv, spec, "image");
   writeFileSync(path.join(deployDir, "docker-compose.yml"), composeContent);
 
   generateDockerfile(deployDir, config);
 
+  // * Ensure release directory has unpacked files for local Docker execution
+  if (!existsSync(releaseDir)) mkdirSync(releaseDir, { recursive: true });
+  copyFileSync(path.join(deployDir, "app.jar"), path.join(releaseDir, "app.jar"));
+  if (existsSync(path.join(deployDir, ".env"))) {
+    copyFileSync(path.join(deployDir, ".env"), path.join(releaseDir, ".env"));
+  }
+  copyFileSync(path.join(deployDir, "docker-compose.yml"), path.join(releaseDir, "docker-compose.yml"));
+  copyFileSync(path.join(deployDir, "Dockerfile"), path.join(releaseDir, "Dockerfile"));
+
+  // Also sync docker-compose.yml to projectRoot
+  writeFileSync(path.join(projectRoot, "docker-compose.yml"), composeContent);
+
   // * Docker image tagging & push (release only)
   const tagVersion = `${config.registryPrefix}${config.name}:v${config.version}`;
   const tagEnv = `${config.registryPrefix}${config.name}:${config.appEnv}`;
 
-  if (cmd === "release") {
+  if (isRelease) {
     console.log(`\n🐳 Building Docker image:\n   🏷️  ${tagVersion}\n   🏷️  ${tagEnv}`);
     run(`docker build -t ${tagVersion} -t ${tagEnv} .`, [], deployDir);
 
@@ -205,7 +177,6 @@ if (cmd === "build" || cmd === "rebuild" || cmd === "release") {
   }
 
   // * Package release ZIP archive
-  if (!existsSync(releaseDir)) mkdirSync(releaseDir, { recursive: true });
   const zipName = `${config.name}##V${config.version}.zip`;
   const zipPath = path.join(releaseDir, zipName);
 
@@ -223,6 +194,84 @@ if (cmd === "build" || cmd === "rebuild" || cmd === "release") {
   run(mvn, ["clean", "-q"], projectRoot);
 
   success(`Release archive ready: release/${zipName}`);
+  return { releaseDir, zipPath, zipName };
+}
+
+// * Command: compose (build and reboot into local Docker machine)
+if (cmd === "compose") {
+  const action = (process.argv[3] || "up").toLowerCase();
+
+  const releaseDir = path.join(projectRoot, "release");
+  const releaseCompose = path.join(releaseDir, "docker-compose.yml");
+  const rootCompose = path.join(projectRoot, "docker-compose.yml");
+  const composeDir = existsSync(releaseCompose) ? releaseDir : projectRoot;
+  const composeFile = existsSync(releaseCompose) ? releaseCompose : rootCompose;
+
+  if (action === "down") {
+    console.log("🐳 Stopping containers...");
+    spawnSync("docker", ["compose", "--project-directory", composeDir, "-f", composeFile, "down"], { stdio: "inherit", cwd: composeDir });
+    process.exit(0);
+  }
+
+  if (action === "restart") {
+    console.log("🐳 Restarting containers...");
+    spawnSync("docker", ["compose", "--project-directory", composeDir, "-f", composeFile, "restart"], { stdio: "inherit", cwd: composeDir });
+    process.exit(0);
+  }
+
+  if (action === "logs") {
+    spawnSync("docker", ["compose", "--project-directory", composeDir, "-f", composeFile, "logs", "-f"], { stdio: "inherit", cwd: composeDir });
+    process.exit(0);
+  }
+
+  // Default (up): Build then reboot into local machine
+  console.log(`\n🚀 Build & Reboot local Docker container for ${config.name} [${config.appEnv}]...`);
+  executeBuild(false);
+
+  const uploadVolume = config.uploadDir;
+  if (uploadVolume) {
+    try {
+      execSync(`docker volume inspect ${uploadVolume} >/dev/null 2>&1 || docker volume create ${uploadVolume}`, { stdio: "ignore" });
+    } catch (_) {}
+  }
+
+  const dockerCmd = ["compose", "--project-directory", releaseDir, "-f", path.join(releaseDir, "docker-compose.yml"), "up", "-d", "--build", "--force-recreate"];
+  console.log(`\n🐳 Rebooting container into local machine:\n   docker ${dockerCmd.join(" ")}\n`);
+  const res = spawnSync("docker", dockerCmd, { stdio: "inherit", cwd: releaseDir });
+  if (res.status !== 0) {
+    die("Docker compose failed to start container.");
+  }
+
+  success(`Successfully rebuilt and rebooted ${config.name} container!`);
+  if (config.port) {
+    console.log(`\n🌐 Local API:   http://localhost:${config.port}`);
+    console.log(`📋 System Logs: http://localhost:${config.port}/logs.html\n`);
+  }
+  process.exit(0);
+}
+
+// * Command: deploy
+if (cmd === "deploy") {
+  const zipName = `${config.name}##V${config.version}.zip`;
+  const zipPath = path.join(projectRoot, "release", zipName);
+  if (!existsSync(zipPath)) {
+    die(`Release package not found at: ${zipPath}\n💡 Run 'ut-build release' or 'ut-build build' first.`);
+  }
+  console.log(`🚀 Ready to deploy: ${zipName}`);
+  console.log(`📋 Instructions:`);
+  console.log(`   1. Transfer release/${zipName} to your server.`);
+  console.log(`   2. Extract and run 'docker compose up -d'.`);
+  process.exit(0);
+}
+
+// * Commands: build / rebuild / release
+if (cmd === "build" || cmd === "rebuild") {
+  executeBuild(false);
+  process.exit(0);
+}
+
+if (cmd === "release") {
+  executeBuild(true);
   process.exit(0);
 }
 
