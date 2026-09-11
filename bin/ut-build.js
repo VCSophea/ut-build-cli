@@ -70,7 +70,7 @@ const mvn = resolveMaven(projectRoot);
 if (cmd === "clean") {
   console.log("🧹 Cleaning project...");
   run(mvn, ["clean", "-q"], projectRoot);
-  ["release", "target", "uploads", "deploy"].forEach((dir) => {
+  ["release", "target", "uploads", "deploy", "templates"].forEach((dir) => {
     const p = path.join(projectRoot, dir);
     if (existsSync(p)) rmSync(p, { recursive: true, force: true });
   });
@@ -124,6 +124,7 @@ if (cmd === "start") {
 
 // * Command: compose
 if (cmd === "compose") {
+  generateAllTemplates(projectRoot, config);
   const uploadVolume = config.uploadDir;
   if (uploadVolume) {
     try {
@@ -219,8 +220,10 @@ if (cmd === "build" || cmd === "rebuild" || cmd === "release") {
     run(`cd "${deployDir}" && zip -r "${zipPath}" .env app.jar Dockerfile docker-compose.yml`, [], projectRoot);
   }
 
-  // * Cleanup intermediate deploy folder
+  // * Cleanup intermediate deploy folder and templates
   if (existsSync(deployDir)) rmSync(deployDir, { recursive: true, force: true });
+  const templatesDir = path.join(projectRoot, "templates");
+  if (existsSync(templatesDir)) rmSync(templatesDir, { recursive: true, force: true });
   run(mvn, ["clean", "-q"], projectRoot);
 
   success(`Release archive ready: release/${zipName}`);
