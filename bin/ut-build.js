@@ -5,7 +5,7 @@ const { existsSync, readdirSync, rmSync, mkdirSync, copyFileSync, writeFileSync,
 const { spawnSync, execSync } = require("child_process");
 const { IS_WIN, die, warn, info, success, run, resolveMaven, setupJdk } = require("../lib/utils");
 const { loadConfig, syncPom, resolveDbConfig } = require("../lib/config");
-const { ENV_SPECS, generateComposeYml, generateAllTemplates, generateDockerfile } = require("../lib/docker");
+const { ENV_SPECS, generateComposeYml, generateDockerfile } = require("../lib/docker");
 
 const projectRoot = process.cwd();
 const cmd = (process.argv[2] || "help").toLowerCase();
@@ -70,7 +70,7 @@ const mvn = resolveMaven(projectRoot);
 if (cmd === "clean") {
   console.log("🧹 Cleaning project...");
   run(mvn, ["clean", "-q"], projectRoot);
-  ["release", "target", "uploads", "deploy", "templates"].forEach((dir) => {
+  ["release", "target", "uploads", "deploy", "docker-compose.yml"].forEach((dir) => {
     const p = path.join(projectRoot, dir);
     if (existsSync(p)) rmSync(p, { recursive: true, force: true });
   });
@@ -84,9 +84,7 @@ syncPom(projectRoot, config);
 
 // * Command: codegen
 if (cmd === "codegen") {
-  console.log("📁 Generating docker-compose templates...");
-  generateAllTemplates(projectRoot, config);
-  success("Templates generated successfully.");
+
 
   const db = resolveDbConfig(config, config.appEnv.toUpperCase());
   if (!db?.url || !db?.user) {
@@ -124,16 +122,17 @@ if (cmd === "start") {
 
 // * Command: compose
 if (cmd === "compose") {
-  generateAllTemplates(projectRoot, config);
+  const spec = ENV_SPECS[config.appEnv] || ENV_SPECS.local;
+  const composeContent = generateComposeYml(config, config.appEnv, spec, "build");
+  const composeFile = path.join(projectRoot, "docker-compose.yml");
+  writeFileSync(composeFile, composeContent);
+
   const uploadVolume = config.uploadDir;
   if (uploadVolume) {
     try {
       execSync(`docker volume inspect ${uploadVolume} >/dev/null 2>&1 || docker volume create ${uploadVolume}`, { stdio: "ignore" });
     } catch (_) {}
   }
-  const templateCompose = path.join(projectRoot, "templates", config.appEnv, "docker-compose.yml");
-  const fallbackCompose = path.join(projectRoot, "templates", "local", "docker-compose.yml");
-  const composeFile = existsSync(templateCompose) ? templateCompose : (existsSync(fallbackCompose) ? fallbackCompose : path.join(projectRoot, "docker-compose.yml"));
 
   const action = (process.argv[3] || "up").toLowerCase();
   const cmdBase = ["compose", "--project-directory", projectRoot, "-f", composeFile];
@@ -163,7 +162,6 @@ if (cmd === "deploy") {
 
 // * Commands: build / rebuild / release
 if (cmd === "build" || cmd === "rebuild" || cmd === "release") {
-  generateAllTemplates(projectRoot, config);
   console.log(`\n🚀 Compiling ${config.name} V${config.version} [${config.appEnv}]...`);
   run(mvn, ["clean", "install", "-Dmaven.test.skip=true", "-q"], projectRoot);
 
@@ -220,10 +218,8 @@ if (cmd === "build" || cmd === "rebuild" || cmd === "release") {
     run(`cd "${deployDir}" && zip -r "${zipPath}" .env app.jar Dockerfile docker-compose.yml`, [], projectRoot);
   }
 
-  // * Cleanup intermediate deploy folder and templates
+  // * Cleanup intermediate deploy folder
   if (existsSync(deployDir)) rmSync(deployDir, { recursive: true, force: true });
-  const templatesDir = path.join(projectRoot, "templates");
-  if (existsSync(templatesDir)) rmSync(templatesDir, { recursive: true, force: true });
   run(mvn, ["clean", "-q"], projectRoot);
 
   success(`Release archive ready: release/${zipName}`);
