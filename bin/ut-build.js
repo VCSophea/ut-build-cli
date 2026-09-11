@@ -157,9 +157,6 @@ function executeBuild(isRelease = false) {
   copyFileSync(path.join(deployDir, "docker-compose.yml"), path.join(releaseDir, "docker-compose.yml"));
   copyFileSync(path.join(deployDir, "Dockerfile"), path.join(releaseDir, "Dockerfile"));
 
-  // Also sync docker-compose.yml to projectRoot
-  writeFileSync(path.join(projectRoot, "docker-compose.yml"), composeContent);
-
   // * Docker image tagging & push (release only)
   const tagVersion = `${config.registryPrefix}${config.name}:v${config.version}`;
   const tagEnv = `${config.registryPrefix}${config.name}:${config.appEnv}`;
