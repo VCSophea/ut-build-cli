@@ -193,7 +193,7 @@ function executeBuild(isRelease = false, runDocker = false) {
   if (IS_WIN) {
     run("powershell", ["-NoProfile", "-Command", "Compress-Archive -Path (Get-ChildItem -Path '" + deployDir + "' -Force) -DestinationPath '" + zipPath + "' -Force"], projectRoot);
   } else {
-    run("cd "" + deployDir + "" && zip -r "" + zipPath + "" .env app.jar Dockerfile docker-compose.yml", [], projectRoot);
+    run("cd \"" + deployDir + "\" && zip -r \"" + zipPath + "\" .env app.jar Dockerfile docker-compose.yml", [], projectRoot);
   }
 
   // * Cleanup intermediate deploy folder
