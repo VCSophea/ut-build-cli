@@ -3,7 +3,7 @@
 const path = require("path");
 const { existsSync, readdirSync, rmSync, mkdirSync, copyFileSync, writeFileSync, readFileSync } = require("fs");
 const { spawnSync, execSync } = require("child_process");
-const { IS_WIN, die, warn, info, success, run, resolveMaven, setupJdk } = require("../lib/utils");
+const { IS_WIN, die, success, run, resolveMaven, resolveGradle, detectBuildTool, setupJdk } = require("../lib/utils");
 const { loadConfig, syncPom, resolveDbConfig } = require("../lib/config");
 const { ENV_SPECS, generateComposeYml, generateDockerfile } = require("../lib/docker");
 
@@ -23,12 +23,12 @@ if (cmd === "help" || cmd === "--help" || cmd === "-h") {
 \x1b[1mAvailable Commands:\x1b[0m
   \x1b[32mbuild\x1b[0m, \x1b[32mrebuild\x1b[0m     Compile Spring Boot, build jar, bundle zip with Dockerfile & compose
   \x1b[32mrelease\x1b[0m            Build + tag Docker image + push to registry + bundle zip
-  \x1b[32mstart\x1b[0m              Run Spring Boot locally (auto-resolves JDK 25)
+  \x1b[32mstart\x1b[0m              Run Spring Boot locally (auto-resolves JDK 25/21/17)
   \x1b[32mcodegen\x1b[0m            Generate docker-compose templates & jOOQ classes
-  \x1b[32mtest\x1b[0m               Run Maven test suite
+  \x1b[32mtest\x1b[0m               Run Maven / Gradle test suite
   \x1b[32mcompose\x1b[0m [up|down]  Run Docker compose for the current APP_ENV
   \x1b[32mdeploy\x1b[0m             Verify release package and show deployment guide
-  \x1b[32mclean\x1b[0m              Clean target, release, deploy, and maven artifacts
+  \x1b[32mclean\x1b[0m              Clean target/build, release, deploy, and build artifacts
   \x1b[32minit\x1b[0m               Configure or update current project's package.json scripts
 
 \x1b[36m=======================================================\x1b[0m
@@ -62,15 +62,22 @@ if (cmd === "init") {
   process.exit(0);
 }
 
-// * Setup JDK & Maven
-setupJdk();
-const mvn = resolveMaven(projectRoot);
+// * Detect Build Tool & Setup JDK (JDK 21 for Gradle/Kotlin projects, JDK 25 for Maven projects)
+const buildTool = detectBuildTool(projectRoot);
+const isGradle = buildTool === "gradle";
+setupJdk(isGradle ? "21" : "25");
+const mvn = isGradle ? null : resolveMaven(projectRoot);
+const gradle = isGradle ? resolveGradle(projectRoot) : null;
 
 // * Command: clean
 if (cmd === "clean") {
   console.log("🧹 Cleaning project...");
-  run(mvn, ["clean", "-q"], projectRoot);
-  ["release", "target", "uploads", "deploy", "docker-compose.yml", "templates"].forEach((dir) => {
+  if (isGradle) {
+    run(gradle, ["clean", "-q"], projectRoot);
+  } else {
+    run(mvn, ["clean", "-q"], projectRoot);
+  }
+  ["release", "target", "build", "uploads", "deploy", "docker-compose.yml", "templates"].forEach((dir) => {
     const p = path.join(projectRoot, dir);
     if (existsSync(p)) rmSync(p, { recursive: true, force: true });
   });
@@ -84,8 +91,6 @@ syncPom(projectRoot, config);
 
 // * Command: codegen
 if (cmd === "codegen") {
-
-
   const db = resolveDbConfig(config, config.appEnv.toUpperCase());
   if (!db?.url || !db?.user) {
     die("Missing DB config in .env for jOOQ codegen");
@@ -107,36 +112,50 @@ if (cmd === "codegen") {
 
 // * Command: test
 if (cmd === "test") {
-  run(mvn, ["test"], projectRoot);
+  if (isGradle) {
+    run(gradle, ["test"], projectRoot);
+  } else {
+    run(mvn, ["test"], projectRoot);
+  }
   process.exit(0);
 }
 
 // * Command: start
 if (cmd === "start") {
   console.log("📦 Resolving dependencies & starting application...");
-  run(mvn, ["dependency:resolve", "-q"], projectRoot);
-  run(mvn, ["clean", "compile", "-DskipTests", "-Djooq.codegen.skip=true", "-q"], projectRoot);
-  run(mvn, ["spring-boot:run"], projectRoot);
+  if (isGradle) {
+    run(gradle, ["bootRun"], projectRoot);
+  } else {
+    run(mvn, ["dependency:resolve", "-q"], projectRoot);
+    run(mvn, ["clean", "compile", "-DskipTests", "-Djooq.codegen.skip=true", "-q"], projectRoot);
+    run(mvn, ["spring-boot:run"], projectRoot);
+  }
   process.exit(0);
 }
 
 // * Reusable build function
 function executeBuild(isRelease = false, runDocker = false) {
   console.log("\n🚀 Compiling " + config.name + " V" + config.version + " [" + config.appEnv + "]...");
-  run(mvn, ["clean", "install", "-Dmaven.test.skip=true", "-q"], projectRoot);
+  let jarDir;
+  if (isGradle) {
+    run(gradle, ["bootJar", "-x", "test", "-q"], projectRoot);
+    jarDir = path.join(projectRoot, "build", "libs");
+  } else {
+    run(mvn, ["clean", "install", "-Dmaven.test.skip=true", "-q"], projectRoot);
+    jarDir = path.join(projectRoot, "target");
+  }
 
-  const targetDir = path.join(projectRoot, "target");
   const deployDir = path.join(projectRoot, "deploy");
   const releaseDir = path.join(projectRoot, "release");
 
-  const jar = readdirSync(targetDir).find((f) => f.endsWith(".jar") && !f.includes("original"));
-  if (!jar) die("Build failed: JAR not found in target directory");
+  const jar = readdirSync(jarDir).find((f) => f.endsWith(".jar") && !f.endsWith("-plain.jar") && !f.includes("original"));
+  if (!jar) die("Build failed: JAR not found in " + (isGradle ? "build/libs" : "target") + " directory");
 
   // * Prepare deploy bundle
   if (existsSync(deployDir)) rmSync(deployDir, { recursive: true, force: true });
   mkdirSync(deployDir, { recursive: true });
 
-  copyFileSync(path.join(targetDir, jar), path.join(deployDir, "app.jar"));
+  copyFileSync(path.join(jarDir, jar), path.join(deployDir, "app.jar"));
   const envFile = path.join(projectRoot, ".env");
   if (existsSync(envFile)) copyFileSync(envFile, path.join(deployDir, ".env"));
 
@@ -198,7 +217,11 @@ function executeBuild(isRelease = false, runDocker = false) {
 
   // * Cleanup intermediate deploy folder
   if (existsSync(deployDir)) rmSync(deployDir, { recursive: true, force: true });
-  run(mvn, ["clean", "-q"], projectRoot);
+  if (isGradle) {
+    run(gradle, ["clean", "-q"], projectRoot);
+  } else {
+    run(mvn, ["clean", "-q"], projectRoot);
+  }
 
   success("Release archive ready: release/" + zipName);
   return { releaseDir, zipPath, zipName };
