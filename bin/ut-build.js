@@ -166,6 +166,7 @@ function executeBuild(isRelease = false, runDocker = false) {
   writeFileSync(path.join(deployDir, "docker-compose.yml"), composeContent);
 
   generateDockerfile(deployDir, config);
+  writeFileSync(path.join(deployDir, ".dockerignore"), "*.zip\n*.log\n.DS_Store\n");
 
   // * Docker image tagging & push (release only)
   const tagVersion = config.registryPrefix + config.name + ":v" + config.version;
@@ -212,7 +213,7 @@ function executeBuild(isRelease = false, runDocker = false) {
   if (IS_WIN) {
     run("powershell", ["-NoProfile", "-Command", "Compress-Archive -Path (Get-ChildItem -Path '" + deployDir + "' -Force) -DestinationPath '" + zipPath + "' -Force"], projectRoot);
   } else {
-    run("cd \"" + deployDir + "\" && zip -r \"" + zipPath + "\" .env app.jar Dockerfile docker-compose.yml", [], projectRoot);
+    run("cd \"" + deployDir + "\" && zip -r \"" + zipPath + "\" .env app.jar Dockerfile docker-compose.yml .dockerignore", [], projectRoot);
   }
 
   // * Cleanup intermediate deploy folder
